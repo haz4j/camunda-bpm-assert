@@ -27,6 +27,11 @@
       <scope>provided</scope>
     </dependency>
 
+    <dependency>
+      <groupId>org.awaitility</groupId>
+      <artifactId>awaitility</artifactId>
+      <scope>provided</scope>
+    </dependency>
   </dependencies>
 
 </project>
