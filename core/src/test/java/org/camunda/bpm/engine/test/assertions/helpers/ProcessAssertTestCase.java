@@ -18,6 +18,7 @@ package org.camunda.bpm.engine.test.assertions.helpers;
 
 
 import org.assertj.core.util.Lists;
+import org.awaitility.core.ConditionTimeoutException;
 import org.junit.After;
 
 import static org.assertj.core.api.Assertions.fail;
@@ -34,13 +35,13 @@ public abstract class ProcessAssertTestCase {
   }
   
   protected void expect(Failure fail) {
-    expect(fail, AssertionError.class);
+    expect(fail, AssertionError.class, ConditionTimeoutException.class);
   }
   
   protected void expect(Failure fail, String messageContent) {
     try {
       fail.when();
-    } catch (AssertionError e) {
+    } catch (AssertionError | ConditionTimeoutException e) {
       if (e.getMessage().contains(messageContent)) {
         System.out.println(String.format("AssertionError caught with message '%s' and expected content '%s'", e.getMessage(), messageContent));
         return;
