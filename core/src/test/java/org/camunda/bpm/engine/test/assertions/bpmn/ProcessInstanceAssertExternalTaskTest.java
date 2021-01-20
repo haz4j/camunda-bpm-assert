@@ -16,6 +16,7 @@
  */
 package org.camunda.bpm.engine.test.assertions.bpmn;
 
+import org.awaitility.core.ConditionTimeoutException;
 import org.camunda.bpm.engine.ProcessEngineException;
 import org.camunda.bpm.engine.externaltask.ExternalTaskQuery;
 import org.camunda.bpm.engine.runtime.ProcessInstance;
@@ -203,10 +204,9 @@ public class ProcessInstanceAssertExternalTaskTest extends ProcessAssertTestCase
     try {
       // When
       assertThat(processInstance).externalTask(TASK2).isNotNull();
-    } catch (AssertionError e) {
+    } catch (ConditionTimeoutException e) {
       // Then
-      assertThat(e).hasMessage("Expecting " + assertThat(processInstance).toString(processInstance) 
-          + " to be waiting at [ExternalTask_2], but it is actually waiting at [ExternalTask_1].");
+      assertThat(e).hasMessageContaining("Condition with lambda expression");
     }
   }
 

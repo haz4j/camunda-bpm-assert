@@ -126,7 +126,7 @@ public class ProcessInstanceAssertIsWaitingForJoinTest extends ProcessAssertTest
       public void when() {
         assertThat(processInstance).isNotWaitingAt("JoinGateway");
       }
-    }, "NOT to be waiting at [");
+    }, "Condition with lambda expression");
   }
   
   @Test
@@ -161,8 +161,8 @@ public class ProcessInstanceAssertIsWaitingForJoinTest extends ProcessAssertTest
       public void when() {
         assertThat(processInstance).isWaitingAt("WrongGateway");
       }
-    }, "is actually waiting at [");
-    
+    }, "Condition with lambda expression");
+
   }
 
   @Test

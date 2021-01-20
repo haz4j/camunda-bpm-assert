@@ -16,12 +16,11 @@
  */
 package org.camunda.bpm.engine.test.assertions.bpmn;
 
-import java.util.*;
-import java.util.stream.Collectors;
-import java.util.stream.Stream;
-
-import org.assertj.core.api.*;
+import org.assertj.core.api.Assertions;
+import org.assertj.core.api.MapAssert;
 import org.assertj.core.util.Lists;
+import org.awaitility.Awaitility;
+import org.awaitility.Durations;
 import org.camunda.bpm.engine.ProcessEngine;
 import org.camunda.bpm.engine.externaltask.ExternalTaskQuery;
 import org.camunda.bpm.engine.history.*;
@@ -30,6 +29,13 @@ import org.camunda.bpm.engine.repository.ProcessDefinitionQuery;
 import org.camunda.bpm.engine.runtime.*;
 import org.camunda.bpm.engine.task.TaskQuery;
 import org.camunda.bpm.engine.test.assertions.AssertionsLogger;
+
+import java.time.Duration;
+import java.time.temporal.TemporalUnit;
+import java.util.*;
+import java.util.concurrent.Callable;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 /**
  * Assertions for a {@link ProcessInstance}
@@ -40,6 +46,8 @@ import org.camunda.bpm.engine.test.assertions.AssertionsLogger;
 public class ProcessInstanceAssert extends AbstractProcessAssert<ProcessInstanceAssert, ProcessInstance> {
 
   protected static final AssertionsLogger LOG = AssertionsLogger.INSTANCE;
+  private Duration delay = Durations.FIVE_SECONDS;
+  private Duration interval = Durations.TWO_HUNDRED_MILLISECONDS;
 
   protected ProcessInstanceAssert(final ProcessEngine engine, final ProcessInstance actual) {
     super(engine, actual, ProcessInstanceAssert.class);
@@ -70,6 +78,24 @@ public class ProcessInstanceAssert extends AbstractProcessAssert<ProcessInstance
         processInstance.getProcessDefinitionId(),
         processInstance.getBusinessKey())
       : null;
+  }
+
+  public ProcessInstanceAssert withDelay(long amount, TemporalUnit unit) {
+    return withDelay(Duration.of(amount, unit));
+  }
+
+  public ProcessInstanceAssert withInterval(long amount, TemporalUnit unit) {
+    return withInterval(Duration.of(amount, unit));
+  }
+
+  public ProcessInstanceAssert withDelay(Duration delay){
+    this.delay = delay;
+    return this;
+  }
+
+  public ProcessInstanceAssert withInterval(Duration interval){
+    this.interval = interval;
+    return this;
   }
 
   /**
@@ -109,7 +135,38 @@ public class ProcessInstanceAssert extends AbstractProcessAssert<ProcessInstance
   }
 
   private ProcessInstanceAssert isWaitingAt(final String[] activityIds, boolean isWaitingAt, boolean exactly) {
-    ProcessInstance current = getExistingCurrent();
+    getExistingCurrent();
+    List<String> activityIdsList = activityIds == null ? new ArrayList<>() : Arrays.asList(activityIds);
+    if (exactly) {
+      if (isWaitingAt) {
+        waitForAsync(() -> {
+          List<String> decendentActivityIds = decendentActivityIds(activityIds);
+          return decendentActivityIds.containsAll(activityIdsList) && activityIdsList.containsAll(decendentActivityIds);
+        });
+      } else {
+        throw new UnsupportedOperationException();
+        // "isNotWaitingAtExactly" is unsupported
+      }
+    } else {
+      if (isWaitingAt) {
+        waitForAsync(() -> decendentActivityIds(activityIds).containsAll(activityIdsList));
+      } else {
+        waitForAsync(() -> !containsAnyOf(decendentActivityIds(activityIds), activityIdsList));
+      }
+    }
+    return this;
+  }
+
+  public static boolean containsAnyOf(List<String> source, List<String> find) {
+    for (String f : find) {
+      if (source.contains(f)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private List<String> decendentActivityIds(String[] activityIds) {
     Assertions.assertThat(activityIds)
       .overridingErrorMessage("Expecting list of activityIds not to be null, not to be empty and not to contain null values: %s."
         , Lists.newArrayList(activityIds))
@@ -118,57 +175,31 @@ public class ProcessInstanceAssert extends AbstractProcessAssert<ProcessInstance
     ActivityInstance activityInstanceTree = runtimeService().getActivityInstance(actual.getId());
 
     // Collect all children recursively
-    Stream <ActivityInstance> flattendActivityInstances = collectAllDecendentActivities(activityInstanceTree);
-
-    Stream<String> decendentActivityIdStream = flattendActivityInstances
-        .flatMap(activityInstance -> getActivityIdAndCollectTransitions(activityInstance));
-    List<String> decendentActivityIds = decendentActivityIdStream.filter(
+    return collectAllDecendentActivities(activityInstanceTree)
+      .flatMap(activityInstance -> getActivityIdAndCollectTransitions(activityInstance))
+      .filter(
         // remove the root id from the list
         activityId -> !activityId.equals(activityInstanceTree.getActivityId())
-    ).collect(Collectors.toList());
-
-    final String message = "Expecting %s " +
-      (isWaitingAt ? "to be waiting at " + (exactly ? "exactly " : "") + "%s, ": "NOT to be waiting at %s, ") +
-      "but it is actually waiting at %s.";
-    ListAssert<String> assertion = (ListAssert<String>) Assertions.assertThat(decendentActivityIds)
-      .overridingErrorMessage(message,
-        toString(current),
-        Lists.newArrayList(activityIds),
-        decendentActivityIds);
-    if (exactly) {
-      if (isWaitingAt) {
-        assertion.containsOnly(activityIds);
-      } else {
-        throw new UnsupportedOperationException();
-        // "isNotWaitingAtExactly" is unsupported
-      }
-    } else {
-      if (isWaitingAt) {
-        assertion.contains(activityIds);
-      } else {
-        assertion.doesNotContain(activityIds);
-      }
-    }
-    return this;
+      ).collect(Collectors.toList());
   }
 
   private Stream<ActivityInstance> collectAllDecendentActivities(ActivityInstance root) {
     ActivityInstance[] childActivityInstances = root.getChildActivityInstances();
     return Stream.concat(
-        Stream.of(root),
-        Arrays.stream(childActivityInstances).flatMap(child -> collectAllDecendentActivities(child))
+      Stream.of(root),
+      Arrays.stream(childActivityInstances).flatMap(child -> collectAllDecendentActivities(child))
     );
   }
 
   private Stream<String> getActivityIdAndCollectTransitions(ActivityInstance root) {
     LOG.collectTransitionInstances(root);
     return Stream.concat(
-        Stream.of(root.getActivityId()),
-        Arrays.stream(root.getChildTransitionInstances())
-            .map(transitionInstance -> {
-              LOG.foundTransitionInstances(transitionInstance);
-              return transitionInstance.getActivityId();
-            })
+      Stream.of(root.getActivityId()),
+      Arrays.stream(root.getChildTransitionInstances())
+        .map(transitionInstance -> {
+          LOG.foundTransitionInstances(transitionInstance);
+          return transitionInstance.getActivityId();
+        })
     );
   }
 
@@ -198,23 +229,23 @@ public class ProcessInstanceAssert extends AbstractProcessAssert<ProcessInstance
 
   private ProcessInstanceAssert isWaitingFor(final String[] messageNames, boolean isWaitingFor) {
     isNotNull();
-    Assertions.assertThat(messageNames)
-      .overridingErrorMessage("Expecting list of messageNames not to be null, not to be empty and not to contain null values: %s."
-        , Lists.newArrayList(messageNames))
-      .isNotNull().isNotEmpty().doesNotContainNull();
+    waitForAsync(() -> checkIsWaitingFor(messageNames, isWaitingFor));
+    return this;
+  }
+
+  private boolean checkIsWaitingFor(String[] messageNames, boolean isWaitingFor) {
+    if (messageNames == null || messageNames.length == 0 || Arrays.stream(messageNames).anyMatch(Objects::isNull)) {
+      return false;
+    }
     for (String messageName: messageNames) {
       List<Execution> executions = executionQuery().messageEventSubscriptionName(messageName).list();
-      ListAssert<Execution> assertion = (ListAssert<Execution>) Assertions.assertThat(executions).overridingErrorMessage("Expecting %s " +
-        (isWaitingFor ? "to be waiting for %s, ": "NOT to be waiting for %s, ") +
-        "but actually did " + (isWaitingFor ? "not ": "") + "find it to be waiting for message [%s].",
-        actual, Arrays.asList(messageNames), messageName);
-      if (isWaitingFor) {
-        assertion.isNotEmpty();
-      } else {
-        assertion.isEmpty();
+      if (isWaitingFor && executions.size() == 0) {
+        return false;
+      } else if (!isWaitingFor && executions.size() > 0) {
+        return false;
       }
     }
-    return this;
+    return true;
   }
 
   /**
@@ -259,46 +290,38 @@ public class ProcessInstanceAssert extends AbstractProcessAssert<ProcessInstance
       .overridingErrorMessage("Expecting list of activityIds not to be null, not to be empty and not to contain null values: %s."
         , Lists.newArrayList(activityIds))
       .isNotNull().isNotEmpty().doesNotContainNull();
+
+    waitForAsync(() -> checkHasPassed(activityIds, hasPassed, inOrder));
+    return this;
+  }
+
+  private boolean checkHasPassed(String[] activityIds, boolean hasPassed, boolean inOrder) {
     List<HistoricActivityInstance> finishedInstances = historicActivityInstanceQuery()
-        .finished()
-        .orderByHistoricActivityInstanceEndTime().asc()
-        .orderPartiallyByOccurrence().asc()
-        .list();
-    List<String> finished = new ArrayList<String>(finishedInstances.size());
-    for (HistoricActivityInstance instance: finishedInstances) {
-      finished.add(instance.getActivityId());
-    }
-    final String message = "Expecting %s " +
-      (hasPassed ? "to have passed activities %s at least once"
-        + (inOrder? " and in order" : "") + ", "
-        : "NOT to have passed activities %s, ") +
-      "but actually we found that it passed %s. (Please make sure you have set the history " +
-      "service of the engine to at least 'activity' or a higher level before making use of this assertion!)";
-    ListAssert<String> assertion = (ListAssert<String>) Assertions.assertThat(finished)
-      .overridingErrorMessage(message,
-        actual,
-        Lists.newArrayList(activityIds),
-        Lists.newArrayList(finished)
-      );
+      .finished()
+      .orderByHistoricActivityInstanceEndTime().asc()
+      .orderPartiallyByOccurrence().asc()
+      .list();
+    List<String> finished = finishedInstances.stream().map(HistoricActivityInstance::getActivityId).collect(Collectors.toList());
+    List<String> activityIdsList = Arrays.asList(activityIds);
+
     if (hasPassed) {
-      assertion.contains(activityIds);
+      if (!finished.containsAll(activityIdsList)){
+        return false;
+      }
       if (inOrder) {
         List<String> remainingFinished = finished;
         for (int i = 0; i< activityIds.length; i++) {
-          Assertions.assertThat(remainingFinished)
-            .overridingErrorMessage(message,
-              actual,
-              Lists.newArrayList(activityIds),
-              Lists.newArrayList(finished)
-            )
-            .contains(activityIds[i]);
+          if (!remainingFinished.contains(activityIds[i])){
+            return false;
+          }
           remainingFinished = remainingFinished.subList(remainingFinished.indexOf(activityIds[i]) + 1, remainingFinished.size());
         }
       }
+      return true;
     }
-    else
-      assertion.doesNotContain(activityIds);
-    return this;
+    else {
+      return !containsAnyOf(finished, activityIdsList);
+    }
   }
 
   /**
@@ -325,34 +348,24 @@ public class ProcessInstanceAssert extends AbstractProcessAssert<ProcessInstance
   }
 
   private ProcessInstanceAssert hasVars(final String[] names) {
+    waitForAsync(() -> checkHasVars(names));
+    return this;
+  }
+
+  private boolean checkHasVars(final String[] names) {
     boolean shouldHaveVariables = names != null;
     boolean shouldHaveSpecificVariables = names != null && names.length > 0;
+    Map<String, Object> variables = vars();
 
-    Map<String, Object> vars = vars();
-    StringBuffer message = new StringBuffer();
-    message.append("Expecting %s to hold ");
-    message.append(shouldHaveVariables ? "process variables"
-      + (shouldHaveSpecificVariables ? " %s, " : ", ") : "no variables at all, ");
-    message.append("instead we found it to hold "
-      + (vars.isEmpty() ? "no variables at all." : "the variables %s."));
-    if (vars.isEmpty() && getCurrent() == null)
-      message.append(" (Please make sure you have set the history " +
-        "service of the engine to at least 'audit' or a higher level " +
-        "before making use of this assertion for historic instances!)");
-
-    MapAssert<String, Object> assertion = variables()
-      .overridingErrorMessage(message.toString(), toString(actual),
-        shouldHaveSpecificVariables ? Arrays.asList(names) : vars.keySet(), vars.keySet());
     if (shouldHaveVariables) {
       if (shouldHaveSpecificVariables) {
-        assertion.containsKeys(names);
+        return variables.keySet().containsAll(Arrays.asList(names));
       } else {
-        assertion.isNotEmpty();
+        return !variables.isEmpty();
       }
     } else {
-      assertion.isEmpty();
+      return variables.isEmpty();
     }
-    return this;
   }
 
   /**
@@ -364,13 +377,26 @@ public class ProcessInstanceAssert extends AbstractProcessAssert<ProcessInstance
    */
   public ProcessInstanceAssert hasProcessDefinitionKey(String processDefinitionKey) {
     isNotNull();
-    final String message = "Expecting %s to have process definition key '%s', " +
-      "but instead found it to have process definition key '%s'.";
-    ProcessDefinition processDefinition = processDefinitionQuery().singleResult();
-    Assertions.assertThat(processDefinitionKey)
-      .overridingErrorMessage(message, toString(actual), processDefinitionKey, processDefinition.getKey())
-      .isEqualTo(processDefinition.getKey());
+    waitForAsync(() -> checkHasProcessDefinitionKey(processDefinitionKey));
     return this;
+  }
+
+  private boolean checkHasProcessDefinitionKey(String processDefinitionKey) {
+    ProcessDefinition processDefinition = processDefinitionQuery().singleResult();
+    if (processDefinition == null){
+      return false;
+    }
+    return equals(processDefinitionKey, processDefinition.getKey());
+  }
+
+  private boolean equals(String s1, String s2) {
+    if (s1 == null && s2 == null){
+      return true;
+    }
+    if (s1 == null || s2 == null){
+      return false;
+    }
+    return s1.equals(s2);
   }
 
   /**
@@ -382,13 +408,16 @@ public class ProcessInstanceAssert extends AbstractProcessAssert<ProcessInstance
    */
   public ProcessInstanceAssert hasBusinessKey(String businessKey) {
     isNotNull();
-    final String message = "Expecting %s to have business key '%s', " +
-      "but instead found it to have business key '%s'.";
-    String currentBusinessKey = getCurrent().getBusinessKey();
-    Assertions.assertThat(businessKey)
-      .overridingErrorMessage(message, toString(actual), businessKey, currentBusinessKey)
-      .isEqualTo(currentBusinessKey);
+    waitForAsync(() -> checkHasBusinessKey(businessKey));
     return this;
+  }
+
+  private boolean checkHasBusinessKey(String businessKey) {
+    ProcessInstance current = getCurrent();
+    if (current == null){
+      return false;
+    }
+    return equals(businessKey, current.getBusinessKey());
   }
 
   /**
@@ -398,17 +427,8 @@ public class ProcessInstanceAssert extends AbstractProcessAssert<ProcessInstance
    */
   public ProcessInstanceAssert isEnded() {
     isNotNull();
-    final String message = "Expecting %s to be ended, but it is not!. (Please " +
-      "make sure you have set the history service of the engine to at least " +
-      "'activity' or a higher level before making use of this assertion!)";
-    Assertions.assertThat(processInstanceQuery().singleResult())
-      .overridingErrorMessage(message,
-        toString(actual))
-      .isNull();
-    Assertions.assertThat(historicProcessInstanceQuery().singleResult())
-      .overridingErrorMessage(message,
-        toString(actual))
-      .isNotNull();
+    waitForAsync(() -> processInstanceQuery().singleResult() == null);
+    waitForAsync(() -> historicProcessInstanceQuery().singleResult() != null);
     return this;
   }
 
@@ -419,12 +439,16 @@ public class ProcessInstanceAssert extends AbstractProcessAssert<ProcessInstance
    * @return  this {@link ProcessInstanceAssert}
    */
   public ProcessInstanceAssert isSuspended() {
-    ProcessInstance current = getExistingCurrent();
-    Assertions.assertThat(current.isSuspended())
-      .overridingErrorMessage("Expecting %s to be suspended, but it is not!",
-        toString(actual))
-      .isTrue();
+    waitForAsync(() -> checkIsSuspended());
     return this;
+  }
+
+  private Boolean checkIsSuspended() {
+    ProcessInstance existingCurrent = getExistingCurrent();
+    if (existingCurrent == null) {
+      return false;
+    }
+    return existingCurrent.isSuspended();
   }
 
   /**
@@ -433,11 +457,7 @@ public class ProcessInstanceAssert extends AbstractProcessAssert<ProcessInstance
    * @return  this {@link ProcessInstanceAssert}
    */
   public ProcessInstanceAssert isNotEnded() {
-    ProcessInstance current = getExistingCurrent();
-    Assertions.assertThat(current)
-      .overridingErrorMessage("Expecting %s not to be ended, but it is!",
-        toString(current))
-      .isNotNull();
+    waitForAsync(() -> getExistingCurrent() != null);
     return this;
   }
 
@@ -448,14 +468,18 @@ public class ProcessInstanceAssert extends AbstractProcessAssert<ProcessInstance
    * @return  this {@link ProcessInstanceAssert}
    */
   public ProcessInstanceAssert isActive() {
+    waitForAsync(() -> checkIsActive());
+    return this;
+  }
+
+  private boolean checkIsActive() {
     ProcessInstance current = getExistingCurrent();
+    if (current == null) {
+      return false;
+    }
     isStarted();
     isNotEnded();
-    Assertions.assertThat(current.isSuspended())
-      .overridingErrorMessage("Expecting %s not to be suspended, but it is!",
-        toString(current))
-      .isFalse();
-    return this;
+    return !current.isSuspended();
   }
 
   /**
@@ -465,14 +489,27 @@ public class ProcessInstanceAssert extends AbstractProcessAssert<ProcessInstance
    * @return  this {@link ProcessInstanceAssert}
    */
   public ProcessInstanceAssert isStarted() {
+    waitForAsync(() -> getCurrentOrHistoric() != null);
+    return this;
+  }
+
+  private Object getCurrentOrHistoric() {
     Object pi = getCurrent();
     if (pi == null)
       pi = historicProcessInstanceQuery().singleResult();
-    Assertions.assertThat(pi)
-      .overridingErrorMessage("Expecting %s to be started, but it is not!",
-        toString(actual))
-      .isNotNull();
-    return this;
+    return pi;
+  }
+
+  private void waitForAsync(Callable<Boolean> callable){
+    waitForAsync(delay, interval, callable);
+  }
+
+  private static void waitForAsync(Duration delay, Duration interval, Callable<Boolean> callable){
+    Awaitility.await()
+      .atMost(delay)
+      .with()
+      .pollInterval(interval)
+      .until(callable);
   }
 
   /**
